@@ -2,90 +2,144 @@ import * as cdk from "@aws-cdk/core";
 import * as ec2 from "@aws-cdk/aws-ec2";
 import * as ecs from "@aws-cdk/aws-ecs";
 import * as ecr from "@aws-cdk/aws-ecr";
-import * as elbv2 from "@aws-cdk/aws-elasticloadbalancingv2";
 import * as ecs_patterns from "@aws-cdk/aws-ecs-patterns";
 import { ApplicationProtocol } from "@aws-cdk/aws-elasticloadbalancingv2";
 import * as acm from "@aws-cdk/aws-certificatemanager";
-import { Certificate } from "@aws-cdk/aws-certificatemanager";
 import { HostedZone } from "@aws-cdk/aws-route53";
+import * as iam from "@aws-cdk/aws-iam";
+import { LogGroup, RetentionDays } from "@aws-cdk/aws-logs";
+import { CfnService } from "@aws-cdk/aws-ecs";
 
 export class TypescriptStack extends cdk.Stack {
+  private appName: string;
+  private repositoryName: string;
+  private vpcName: string;
+  private clusterName: string;
+  private loggingStreamPrefix: string;
+  private executionRoleName: string;
+  private albName: string;
+  private containerName: string;
+  private taskDefinitionName: string;
+  private serviceName: string;
+  private certName: string;
+  private certARN: string;
+  private domainName: string;
+  private zoneName: string;
+  private hostedZoneId: string;
+  private loadBalancerOPName: string;
+  private healthCheckPath: string;
+  private roleDesc: string;
+  private roleActions: string[];
+  private logGroupName: string;
+
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // The code that defines your stack goes here
+    this.appName = "websimio";
 
-    // Create the ECR Repository
-    const repository = new ecr.Repository(this, "websimio-repository", {
-      repositoryName: "websimio-repository",
+    // 👇 Uses above default app name to create other resource names
+    this.repositoryName = `${this.appName}-repository`;
+    this.vpcName = `${this.appName}-vpc`;
+    this.clusterName = `${this.appName}-cluster`;
+    this.loggingStreamPrefix = `${this.appName}`;
+    this.executionRoleName = `${this.appName}-execution-role`;
+    this.albName = `${this.appName}-alb`;
+    this.containerName = `${this.appName}-container`;
+    this.taskDefinitionName = `${this.appName}-task-definition`;
+    this.serviceName = `${this.appName}-api-service`;
+    this.certName = `${this.appName}-cert`;
+    this.certARN =
+      "arn:aws:acm:us-east-1:713707877658:certificate/72363c9f-eb07-47db-b25f-e472bd76ae5e";
+    this.domainName = "websim.io";
+    this.zoneName = `${this.appName}-zone`;
+    this.hostedZoneId = "Z04535052UVVBAQYA78G";
+    this.loadBalancerOPName = "websimio-loadBalancerDNS";
+    this.healthCheckPath = "/healthcheck";
+    this.roleActions = [
+      "ecr:GetAuthorizationToken",
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchGetImage",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ];
+    this.roleDesc = "Execution Role for WebSIMIO";
+    this.logGroupName = `${this.appName}-log-group`;
+    //
+
+    // 👇 Create the ECR Repository
+    const repository = new ecr.Repository(this, this.repositoryName, {
+      repositoryName: this.repositoryName,
     });
 
-    // Create VPC
-    const vpc = new ec2.Vpc(this, "websimio-vpc", { maxAzs: 2 });
-    const cluster = new ecs.Cluster(this, "websimio-cluster", {
-      clusterName: "websimio-cluster",
+    // 👇 Create VPC
+    const vpc = new ec2.Vpc(this, this.vpcName, { maxAzs: 2 });
+    const cluster = new ecs.Cluster(this, this.clusterName, {
+      clusterName: this.clusterName,
       vpc,
     });
 
-    // Create task definition
-    // const taskDefinition = new ecs.FargateTaskDefinition(
-    //   this,
-    //   "websimio-taskdefinition",
-    //   { family: "websimio-taskdefinition" }
-    // );
-    // Ec2TaskDefinition(
-    //   this,
-    //   "websimio-taskdefinition"
-    // );
+    // 👇 Create a task definition with CloudWatch Logs
+    const logGroup = new LogGroup(this, this.logGroupName, {
+      retention: RetentionDays.ONE_WEEK,
+      logGroupName: this.logGroupName,
+    });
 
-    // const container = taskDefinition.addContainer("websimio-container", {
-    //   image: ecs.ContainerImage.fromRegistry("amazon/amazon-ecs-sample"),
-    //   memoryLimitMiB: 512,
-    //   logging,
-    //   containerName: "websimio-container",
-    // });
+    const logging = new ecs.AwsLogDriver({
+      logGroup,
+      streamPrefix: this.loggingStreamPrefix,
+    });
 
-    // container.addPortMappings({
-    //   containerPort: 80,
-    //   hostPort: 80,
-    //   protocol: ecs.Protocol.TCP,
-    // });
+    // 👇 Create a Policy Document (Collection of Policy Statements)
+    const allowExecutionForEvents = new iam.PolicyDocument({
+      statements: [
+        new iam.PolicyStatement({
+          resources: ["*"],
+          actions: this.roleActions,
+          // 👇 Default for `effect` is ALLOW
+          effect: iam.Effect.ALLOW,
+        }),
+      ],
+    });
 
-    // // Create Service
-    // const service = new ecs.FargateService(this, "websimio-api-service", {
-    //   cluster,
-    //   taskDefinition,
-    //   serviceName: "websimio-api-service",
-    // });
+    // 👇 Create role, to which we'll attach our Policies
+    const role = new iam.Role(this, this.executionRoleName, {
+      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+      description: this.roleDesc,
+      inlinePolicies: {
+        // 👇 attach the Policy Document as inline policies
+        AllowedEvents: allowExecutionForEvents,
+      },
+      roleName: this.executionRoleName,
+    });
 
-    // create a task definition with CloudWatch Logs
-    const logging = new ecs.AwsLogDriver({ streamPrefix: "websimio" });
-
-    // Create ALB
+    // 👇 Create Load Balancer with Fargate
     const albService = new ecs_patterns.ApplicationLoadBalancedFargateService(
       this,
-      "websimio-alb",
+      this.albName,
       {
-        loadBalancerName: "websimio-alb",
+        loadBalancerName: this.albName,
         memoryLimitMiB: 512,
-        // taskDefinition,
         taskImageOptions: {
           image: ecs.ContainerImage.fromRegistry("amazon/amazon-ecs-sample"),
-          containerName: "websimio-container",
+          containerName: this.containerName,
           containerPort: 80,
           logDriver: logging,
+          family: this.taskDefinitionName,
+          executionRole: role,
+          enableLogging: true,
         },
-        serviceName: "websimio-api-service",
+        serviceName: this.serviceName,
         cluster,
         certificate: acm.Certificate.fromCertificateArn(
           this,
-          "websimio-cert",
-          "arn:aws:acm:us-east-1:713707877658:certificate/72363c9f-eb07-47db-b25f-e472bd76ae5e"
+          this.certName,
+          this.certARN
         ),
-        domainName: "websim.io",
-        domainZone: HostedZone.fromHostedZoneAttributes(this, "websimio-zone", {
-          hostedZoneId: "Z04535052UVVBAQYA78G",
-          zoneName: "websim.io",
+        domainName: this.domainName,
+        domainZone: HostedZone.fromHostedZoneAttributes(this, this.zoneName, {
+          hostedZoneId: this.hostedZoneId,
+          zoneName: this.domainName,
         }),
         listenerPort: 443,
         protocol: ApplicationProtocol.HTTPS,
@@ -93,68 +147,33 @@ export class TypescriptStack extends cdk.Stack {
         desiredCount: 1,
       }
     );
+
+    // Configure health check endpoint
     albService.targetGroup.configureHealthCheck({
-      path: "/",
+      path: this.healthCheckPath,
     });
 
-    // // Setup AutoScaling policy
-    // const scaling = albService.service.autoScaleTaskCount({ maxCapacity: 2 });
-    // scaling.scaleOnCpuUtilization("websimio-asg", {
-    //   policyName: "websimio-asg-policy",
-    //   targetUtilizationPercent: 50,
-    //   scaleInCooldown: cdk.Duration.seconds(60),
-    //   scaleOutCooldown: cdk.Duration.seconds(60),
-    // });
+    albService.taskDefinition.addContainer("logger-sidecar", {
+      image: ecs.ContainerImage.fromRegistry("busybox"),
+      command: ["tail", "-n+1", "-F", "/apps/api/logs/combined.outerr.log"],
+      logging: new ecs.AwsLogDriver({
+        streamPrefix: `${this.appName}-app-logs`,
+        logGroup,
+      }),
+      containerName: "logger-sidecar",
+    });
 
-    // Add Listener
-    // const listener = albService.loadBalancer.addListener(
-    //   "websimio-publicListener",
-    //   {
-    //     port: 443,
-    //     open: true,
-    //     certificateArns: [
-    //       "arn:aws:acm:us-east-1:713707877658:certificate/72363c9f-eb07-47db-b25f-e472bd76ae5e",
-    //     ],
-    //   }
-    // );
+    // const cfnService = albService.service.node.tryFindChild(
+    //   "Service"
+    // ) as CfnService;
 
-    // lb.targetGroup.
+    // cfnService.addPropertyOverride("mountPoints","")
 
-    // const listener = lb.addListener("PublicListener", {
-    //   port: 443,
-    //   open: true,
-    //   certificateArns: [
-    //     "arn:aws:acm:us-east-1:713707877658:certificate/72363c9f-eb07-47db-b25f-e472bd76ae5e",
-    //   ],
-    // });
-    // const listener = lb.addListener('PublicListener', { port: 80, open: true });
+    // (
+    //   albService.service.node.tryFindChild("Service") as CfnService
+    // )?.addPropertyOverride("TaskDefinition", "");
 
-    // albService.loadBalancer.addRedirect({
-    //   sourceProtocol: ApplicationProtocol.HTTP,
-    //   sourcePort: 80,
-    //   targetProtocol: ApplicationProtocol.HTTPS,
-    //   targetPort: 443,
-    // });
-
-    // Attach ALB to ECS Service
-    // listener.addTargets("ECS", {
-    //   targetGroupName: "websimio-tg",
-    //   port: 80,
-    //   targets: [
-    //     albService.service.loadBalancerTarget({
-    //       containerName: "websimio-container",
-    //       containerPort: 80,
-    //     }),
-    //   ],
-    //   // include health check (default is none)
-    //   healthCheck: {
-    //     interval: cdk.Duration.seconds(60),
-    //     path: "/",
-    //     timeout: cdk.Duration.seconds(5),
-    //   },
-    // });
-
-    new cdk.CfnOutput(this, "websimio-loadBalancerDNS", {
+    new cdk.CfnOutput(this, this.loadBalancerOPName, {
       value: albService.loadBalancer.loadBalancerDnsName,
     });
   }
